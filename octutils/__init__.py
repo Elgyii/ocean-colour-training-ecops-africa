@@ -11,7 +11,10 @@ import numpy as np
 import requests
 from cartopy import crs as ccrs
 from shapely.geometry import Polygon
-
+from itertools import cycle
+from shutil import get_terminal_size
+from threading import Thread
+from time import sleep
 from . import quicklook
 
 
@@ -115,9 +118,9 @@ def search(bbox: tuple, start: datetime, end: datetime, dtype: str) -> list:
     if dtype.lower() == 'oc':
         product = 'IWPR'
         did = '10002001'
-    if dtype.lower() == 'sst':
+    if 'sst' in dtype.lower():
         did = '10002002'
-        product = 'SST'
+        product = dtype.upper()
 
     w, s, e, n = bbox
     bounds = Polygon(((w, s), (w, n), (e, n), (e, s), (w, s)))
@@ -188,7 +191,7 @@ def getfile(bbox, start_date, end_date, output_dir=None, sensor='sgli', dtype='O
     downloaded = []
     fetched = downloaded.append
     if output_dir is None:
-        output_dir = Path.cwd().joinpath(f'{sensor}_L2'.upper())
+        output_dir = Path.cwd().joinpath('data')
     if not output_dir.is_dir():
         output_dir.mkdir(parents=True)
 
@@ -207,182 +210,47 @@ def getfile(bbox, start_date, end_date, output_dir=None, sensor='sgli', dtype='O
     return downloaded
 
 
-def get_data(file: h5py.File, key: str):
-    """
-    Converts digital number to geophysical values in an open hdf5 `h5`
-    :param file: open h5py.File object
-    :type file: h5py
-    :param key: name of the variable being read
-    :type key: str
-    :return: geophysical data
-    :rtype: np.array
-    """
-    if key == 'QA_flag':
-        sds = np.ma.squeeze(h5[f'Image_data/{key}'][:])
-        np.ma.set_fill_value(sds, 0)
-        return sds
+class Status:
+    def __init__(self, desc="Loading...", end="Done!", timeout=0.1):
+        """
+        A loader-like context manager
+        https://stackoverflow.com/questions/22029562/python-how-to-make-simple-animated-loading-while-process-is-running
 
-    path = f'Geometry_data/{key}' \
-        if key[:3].lower() in ('lon', 'lat') \
-        else f'Image_data/{key}'
-    fill_value = np.float32(-32767)
-    sdn = file[path][:]
-    attrs = attr_fmt(h5=file, address=path)
+        Args:
+            desc (str, optional): The loader's description. Defaults to "Loading...".
+            end (str, optional): Final print. Defaults to "Done!".
+            timeout (float, optional): Sleep time between prints. Defaults to 0.1.
+        """
+        self.desc = desc
+        self.end = end
+        self.timeout = timeout
 
-    mask = False
-    if 'Error_DN' in attrs.keys():
-        mask = mask | np.where(np.equal(sdn, attrs.pop('Error_DN')), True, False)
-    if 'Land_DN' in attrs.keys():
-        mask = mask | np.where(np.equal(sdn, attrs.pop('Land_DN')), True, False)
-    if 'Cloud_error_DN' in attrs.keys():
-        mask = mask | np.where(np.equal(sdn, attrs.pop('Cloud_error_DN')), True, False)
-    if 'Retrieval_error_DN' in attrs.keys():
-        mask = mask | np.where(np.equal(sdn, attrs.pop('Retrieval_error_DN')), True, False)
-    if ('Minimum_valid_DN' in attrs.keys()) and ('Maximum_valid_DN' in attrs.keys()):
-        # https://shikisai.jaxa.jp/faq/docs/GCOM-C_Products_Users_Guide_entrylevel__attach4_jp_191007.pdf#page=46
-        mask = mask | np.where((sdn <= attrs.pop('Minimum_valid_DN')) |
-                               (sdn >= attrs.pop('Maximum_valid_DN')), True, False)
+        self._thread = Thread(target=self._animate, daemon=True)
+        self.steps = ["⢿", "⣻", "⣽", "⣾", "⣷", "⣯", "⣟", "⡿"]
+        self.done = False
 
-    # Convert DN to PV
-    slope, offset = 1, 0
-    if 'NWLR' in key:
-        if ('Rrs_slope' in attrs.keys()) and \
-                ('Rrs_slope' in attrs.keys()):
-            slope = attrs.pop('Rrs_slope')
-            offset = attrs.pop('Rrs_offset')
-    else:
-        if ('Slope' in attrs.keys()) and \
-                ('Offset' in attrs.keys()):
-            slope = attrs.pop('Slope')
-            offset = attrs.pop('Offset')
-    sds = sdn * slope + offset
+    def start(self):
+        self._thread.start()
+        return self
 
-    if key[:3].lower() in ('lon', 'lat'):
-        return sds
-    return np.ma.masked_array(sds,
-                              mask=mask,
-                              fill_value=fill_value,
-                              dtype=np.float32)
+    def _animate(self):
+        for c in cycle(self.steps):
+            if self.done:
+                break
+            print(f"\r{self.desc} {c}", flush=True, end="")
+            sleep(self.timeout)
+
+    def __enter__(self):
+        self.start()
+
+    def stop(self):
+        self.done = True
+        cols = get_terminal_size((80, 20)).columns
+        print("\r" + " " * cols, end="", flush=True)
+        print(f"\r{self.end}", flush=True)
+
+    def __exit__(self, exc_type, exc_value, tb):
+        self.stop()
 
 
-def interp2d(src_geo: np.array, interval: int):
-    """
-        Bilinear interpolation of SGLI geo-location corners to a spatial grid
-        (c) Adapted from the GCOM-C PI kick-off meeting 201908, K. Ogata (JAXA)
-
-        Parameters
-        ----------
-        src_geo: np.array
-            either lon or lat
-        interval: int
-            resampling interval in pixels
-
-        Return
-        ------
-        out_geo: np.array
-            2-D array with dims == to geophysical variables
-    """
-    sds = np.concatenate((src_geo, src_geo[-1].reshape(1, -1)), axis=0)
-    sds = np.concatenate((sds, sds[:, -1].reshape(-1, 1)), axis=1)
-
-    ratio_0 = np.tile(
-        np.linspace(0, (interval - 1) / interval, interval, dtype=np.float32),
-        (sds.shape[0] * interval, sds.shape[1] - 1))
-
-    ratio_1 = np.tile(
-        np.linspace(0, (interval - 1) / interval, interval, dtype=np.float32).reshape(-1, 1),
-        (sds.shape[0] - 1, (sds.shape[1] - 1) * interval))
-
-    sds = np.repeat(sds, interval, axis=0)
-    sds = np.repeat(sds, interval, axis=1)
-    interp = (1. - ratio_0) * sds[:, :-interval] + ratio_0 * sds[:, interval:]
-    return (1. - ratio_1) * interp[:-interval, :] + ratio_1 * interp[interval:, :]
-
-
-def geometry_data(file: h5py.File, key: str):
-    """
-    Retrieve SGLI navigation data
-    (c) GCOM-C PI kick-off meeting 201908, K. Ogata (JAXA)
-    :param file: open h5py.File object
-    :type file: h5py.File
-    :param key: variable name
-    :type key: str
-    :return: geolocation data
-    :rtype: np.array
-    """
-    nsl, = file['Image_data'].attrs['Number_of_lines']
-    psl, = file['Image_data'].attrs['Number_of_pixels']
-    img_size = (slice(0, nsl), slice(0, psl))
-
-    data = get_data(file=file, key='Latitude')
-    interval, = file[f'Geometry_data/{key}'].attrs['Resampling_interval']
-    if 'lat' in key.lower():
-        # Get Latitude
-        return interp2d(src_geo=data, interval=interval)[img_size]
-
-    # Get Longitude
-    is_stride_180 = False
-    if np.abs(np.nanmin(data) - np.nanmax(data)) > 180.:
-        is_stride_180 = True
-        data[data < 0] = 360. + data[data < 0]
-    data = interp2d(src_geo=data, interval=interval)[img_size]
-
-    if is_stride_180:
-        data[data > 180.] = data[data > 180.] - 360.
-    return data
-
-
-def imview(data, lon, lat, scale='lin'):
-    """
-    Quick view of satellite swath image
-    :param data:
-    :type data:
-    :param lon:
-    :type lon:
-    :param lat:
-    :type lat:
-    :param scale:
-    :type scale:
-    :return:
-    :rtype:
-    """
-
-    y, x = data.shape
-    x, y = 20, 20 * (y / x)
-    crs = ccrs.PlateCarree()
-
-    fig, ax = plt.subplots(figsize=(x, y),
-                           subplot_kw={'projection': crs})
-    # --------
-    # img norm
-    # --------
-    mn, mx = np.ma.min(data), np.ma.max(data)
-    norm = quicklook.get_norm(vmin=mn, vmax=mx,
-                              scale=scale, caller='imv')
-    cmp = plt.get_cmap('nipy_spectral')
-
-    # --------
-    # img disp
-    # --------
-    extent = lon.min(), lon.max(), lat.min(), lat.max()
-    m = ax.imshow(data,
-                  transform=crs,
-                  extent=extent,
-                  norm=norm,
-                  cmap=cmp,
-                  origin='upper')
-    # ax.axis('off')
-    ax.gridlines()
-    ax.set_aspect(1 / np.cos(np.deg2rad(lat.mean())))
-    fig.colorbar(m, ax=ax, shrink=0.5, pad=0.01)
-
-    land = cfeature.NaturalEarthFeature(
-        'physical', 'land', '10m',
-        linewidth=2,
-        edgecolor='r',
-        facecolor='0.3')
-    ax.add_feature(land)
-    return fig, ax
-
-
-__all__ = ['getfile', 'quicklook', 'get_data', 'geometry_data', 'imview']
+__all__ = ['getfile', 'quicklook']

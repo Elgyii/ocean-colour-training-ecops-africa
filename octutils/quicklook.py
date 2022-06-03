@@ -59,8 +59,16 @@ class FileError(Exception):
 
 
 class File:
-
     def __init__(self, file: Path, mode: str = 'r', **kw):
+        """
+        Interface for data I/O (JAXA's hdf5 and NASA's netcdf4)
+        :param file:
+        :type file:
+        :param mode:
+        :type mode:
+        :param kw:
+        :type kw:
+        """
         self.var = None
         self.obj = None
         self.file = file
@@ -306,10 +314,8 @@ class File:
         return 0
 
 
-def get_norm(vmin: float, vmax: float, scale: str, caller='qv'):
+def get_norm(vmin: float, vmax: float, scale: str):
     if scale == 'log':
-        if caller == 'qv':
-            vmin, vmax = 0.01, 10
         return LogNorm(vmin=vmin, vmax=vmax)
     levels = MaxNLocator(nbins=256).tick_values(vmin=vmin, vmax=vmax)
     return BoundaryNorm(levels, ncolors=256, clip=True)
@@ -330,7 +336,40 @@ def elapsed(start: float, file: Path):
     return
 
 
-def save_img(sds, file: Path, crs, key: str):
+def imview(sds, file: Path, crs, scale: str):
+    y, x = sds.shape
+    x, y = 20, 20 * (y / x)
+    fig, ax = plt.subplots(figsize=(x, y),
+                           subplot_kw={'projection': crs})
+    # --------
+    # img norm
+    # --------
+    mn, mx = np.ma.min(sds), np.ma.max(sds)
+    norm = get_norm(vmin=mn, vmax=mx, scale=scale)
+    cmp = plt.get_cmap('nipy_spectral')
+
+    # --------
+    # img disp
+    # --------
+    m = ax.imshow(sds,
+                  transform=crs,
+                  extent=crs.bounds,
+                  norm=norm,
+                  cmap=cmp,
+                  origin='upper')
+    ax.gridlines(color='gray', linestyle=':')
+    ax.coastlines(linewidth=3)
+    fig.set_facecolor("black")
+    fig.colorbar(m, ax=ax, shrink=0.5, pad=0.01)
+    fig.savefig(file)
+    plt.clf()
+
+    im = Image.open(file)
+    plt.imshow(im, ax=ax)
+    return fig, ax
+
+
+def imsave(sds, file: Path, crs, scale: str):
     size = [s / 100 for s in sds.shape[::-1]]
     fig, ax = plt.subplots(figsize=size,
                            clear=True,
@@ -340,9 +379,6 @@ def save_img(sds, file: Path, crs, key: str):
     # img norm
     # --------
     mn, mx = np.ma.min(sds), np.ma.max(sds)
-    scale = 'lin'
-    if key in ('CHLA', 'chlor_a', 'CDOM'):
-        scale = 'log'
     norm = get_norm(vmin=mn, vmax=mx, scale=scale)
     cmp = plt.get_cmap('nipy_spectral')
 
@@ -355,22 +391,21 @@ def save_img(sds, file: Path, crs, key: str):
               norm=norm,
               cmap=cmp,
               origin='upper')
+    ax.gridlines(color='gray', linestyle=':')
     ax.axis('off')
-    ax.gridlines()
     land = cfeature.NaturalEarthFeature(
         'physical', 'land', '10m',
         linewidth=1,
         edgecolor='w',
         facecolor='0.2')
     ax.add_feature(land)
-
     fig.set_facecolor("black")
     fig.savefig(file)
     plt.close(fig)
     return
 
 
-def get_quicklook(file: Path, key: str, save: Path):
+def quicklook(file: Path, key: str, outpath: Path, save: bool, scale: str):
     with File(file=file, mode='r', **{'var': key}) as obj:
         roi = obj.spatial_resolution()
         # ---------
@@ -407,21 +442,31 @@ def get_quicklook(file: Path, key: str, save: Path):
     # ---------
     # Get image
     # ---------
-    save_img(sds=result,
-             key=key,
-             file=save,
-             crs=crs)
-    return
+    if save:
+        return imsave(sds=result, file=outpath, crs=crs, scale=scale)
+    return imview(sds=result, file=outpath, crs=crs, scale=scale)
 
 
-def get(pattern: Path, key: str):
-    plt.rcParams.update({
-        'figure.frameon': False,
-        'figure.figsize': (100, 100),
-        'figure.constrained_layout.use': True
-    })
+def get(file_pattern: Path, key: str, save: bool = False):
+    """
+    Get a quick view of satellite swath image
+    :param file_pattern: File pattern or name
+    :type file_pattern: Path
+    :param key: variable to be displayed
+    :type key: str
+    :param save: whether to save the created image (Default False)
+    :type save: bool
+    :return: None
+    :rtype: None
+    """
+    if save:
+        plt.rcParams.update({
+            'figure.frameon': False,
+            'figure.figsize': (100, 100),
+            'figure.constrained_layout.use': True
+        })
 
-    for f in pattern.parent.glob(pattern.name):
+    for f in file_pattern.parent.glob(file_pattern.name):
         start = time.process_time()
 
         ext = f.suffix
@@ -433,10 +478,11 @@ def get(pattern: Path, key: str):
         # ------
         # ql fig
         # ------
-        get_quicklook(file=f, save=out, key=key)
+        scale = 'log' if key in ('CHLA', 'chlor_a', 'CDOM') else 'lin'
+        quicklook(file=f, outpath=out, scale=scale, save=save, key=key)
         # -------
         elapsed(start=start, file=out)
-    return 0
+    return
 
 
 if __name__ == '__main__':
@@ -486,4 +532,4 @@ if __name__ == '__main__':
     if ('nc' in pat.name) and (var is None):
         var = 'chlor_a'
 
-    get(key=var, pattern=pat)
+    get(key=var, file_pattern=pat, save=True)
