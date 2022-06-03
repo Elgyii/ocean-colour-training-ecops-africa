@@ -1,0 +1,22 @@
+# ignore .idea files
+.idea
+.git
+.ipynb_checkpoints
+
+# ignore folders
+LogFiles/
+logs/
+
+
+# ignore python cache
+__pycache__/
+
+
+# ingone data files
+*.h5
+*.nc
+*.pptx
+
+debugger*
+
+        
