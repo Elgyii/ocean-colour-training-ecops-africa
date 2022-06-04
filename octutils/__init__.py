@@ -4,9 +4,9 @@ from datetime import datetime
 from netrc import netrc, NetrcParseError
 from pathlib import Path
 
-import cartopy.feature as cfeature
 import h5py
 import matplotlib.pyplot as plt
+from matplotlib import colors
 import numpy as np
 import requests
 from cartopy import crs as ccrs
@@ -16,6 +16,7 @@ from shutil import get_terminal_size
 from threading import Thread
 from time import sleep
 from . import quicklook
+from .quicklook import File
 
 
 def getauth(host: str, raise_errors=None):
@@ -176,7 +177,7 @@ def getfile(bbox, start_date, end_date, output_dir=None, sensor='sgli', dtype='O
     :type sensor: str
     :param dtype: data type, OC - ocean colour or SST - sea surface temperature
     :type dtype: str
-    :return: list of images with download links
+    :return: list of downloaded data files
     :rtype: list
     """
     if sensor != 'sgli':
@@ -210,47 +211,123 @@ def getfile(bbox, start_date, end_date, output_dir=None, sensor='sgli', dtype='O
     return downloaded
 
 
-class Status:
-    def __init__(self, desc="Loading...", end="Done!", timeout=0.1):
-        """
-        A loader-like context manager
-        https://stackoverflow.com/questions/22029562/python-how-to-make-simple-animated-loading-while-process-is-running
-
-        Args:
-            desc (str, optional): The loader's description. Defaults to "Loading...".
-            end (str, optional): Final print. Defaults to "Done!".
-            timeout (float, optional): Sleep time between prints. Defaults to 0.1.
-        """
-        self.desc = desc
-        self.end = end
-        self.timeout = timeout
-
-        self._thread = Thread(target=self._animate, daemon=True)
-        self.steps = ["⢿", "⣻", "⣽", "⣾", "⣷", "⣯", "⣟", "⡿"]
-        self.done = False
-
-    def start(self):
-        self._thread.start()
-        return self
-
-    def _animate(self):
-        for c in cycle(self.steps):
-            if self.done:
-                break
-            print(f"\r{self.desc} {c}", flush=True, end="")
-            sleep(self.timeout)
-
-    def __enter__(self):
-        self.start()
-
-    def stop(self):
-        self.done = True
-        cols = get_terminal_size((80, 20)).columns
-        print("\r" + " " * cols, end="", flush=True)
-        print(f"\r{self.end}", flush=True)
-
-    def __exit__(self, exc_type, exc_value, tb):
-        self.stop()
+def get_norm(vmin=0, vmax=1, nbins=256):
+    levels = ticker.MaxNLocator(nbins=nbins).tick_values(vmin, vmax)
+    return colors.BoundaryNorm(levels, ncolors=nbins, clip=True)
 
 
-__all__ = ['getfile', 'quicklook']
+def custom_cmap(color_list: list = None):
+    """
+
+    :param color_list:
+    :type color_list:
+    :return:
+    :rtype:
+    """
+    if color_list is None:
+        color_list = ['r', 'g', 'b']
+
+    return colors.LinearSegmentedColormap.from_list(
+        'custom', color_list,
+        # '#ff0033', '#ff8100', '#05832d', '#008bc1', '#4d0078'
+        N=256)
+
+
+def bytescale(data, cmin=None, cmax=None, high=255, low=0):
+    """
+    Byte scales an array (image).
+    Byte scaling means converting the input image to uint8 dtype and scaling
+    the range to ``(low, high)`` (default 0-255).
+    If the input image already has dtype uint8, no scaling is done.
+    https://github.com/scipy/scipy/blob/v0.18.1/scipy/misc/pilutil.py#L33-L100
+
+    Parameters
+    ----------
+    data : ndarray
+        PIL image data array.
+    cmin : scalar, optional
+        Bias scaling of small values. Default is ``data.min()``.
+    cmax : scalar, optional
+        Bias scaling of large values. Default is ``data.max()``.
+    high : scalar, optional
+        Scale max value to `high`.  Default is 255.
+    low : scalar, optional
+        Scale min value to `low`.  Default is 0.
+    Returns
+    -------
+    img_array : uint8 ndarray
+        The byte-scaled array.
+    Examples
+    --------
+    >>> from scipy.misc import bytescale
+    >>> img = np.array([[ 91.06794177,   3.39058326,  84.4221549 ],
+    ...                 [ 73.88003259,  80.91433048,   4.88878881],
+    ...                 [ 51.53875334,  34.45808177,  27.5873488 ]])
+    >>> bytescale(img)
+    array([[255,   0, 236],
+           [205, 225,   4],
+           [140,  90,  70]], dtype=uint8)
+    >>> bytescale(img, high=200, low=100)
+    array([[200, 100, 192],
+           [180, 188, 102],
+           [155, 135, 128]], dtype=uint8)
+    >>> bytescale(img, cmin=0, cmax=255)
+    array([[91,  3, 84],
+           [74, 81,  5],
+           [52, 34, 28]], dtype=uint8)
+    """
+    if data.dtype == np.uint8:
+        return data
+
+    if high < low:
+        raise ValueError("`high` should be larger than `low`.")
+
+    if cmin is None:
+        cmin = data.min()
+    if cmax is None:
+        cmax = data.max()
+
+    cscale = cmax - cmin
+    if cscale < 0:
+        raise ValueError("`cmax` should be larger than `cmin`.")
+    elif cscale == 0:
+        cscale = 1
+
+    scale = float(high - low) / cscale
+    bytedata = (data * 1.0 - cmin) * scale + 0.4999
+    bytedata[bytedata > high] = high
+    bytedata[bytedata < 0] = 0
+    return np.cast[np.uint8](bytedata) + np.cast[np.uint8](low)
+
+
+def enhance_image(image):
+    """
+    Color enhancement
+    https://moonbooks.org/Codes/Plot-MODIS-granule-RGB-image-using-python-with-color-enhancement/
+    http://www.idlcoyote.com/ip_tips/brightmodis.html
+    """
+
+    image = bytescale(image)
+
+    x = np.array([0, 30, 60, 120, 190, 255], dtype=np.uint8)
+    y = np.array([0, 90, 160, 210, 240, 255], dtype=np.uint8)
+
+    along_track, cross_trak = image.shape
+
+    scaled = np.zeros((along_track, cross_trak), dtype=np.uint8)
+    for i in range(len(x) - 1):
+        x1 = x[i]
+        x2 = x[i + 1]
+        y1 = y[i]
+        y2 = y[i + 1]
+        m = (y2 - y1) / float(x2 - x1)
+        b = y2 - (m * x2)
+        mask = ((image >= x1) & (image < x2))
+        scaled = scaled + mask * np.asarray(m * image + b, dtype=np.uint8)
+
+    mask = image >= y[-1]
+    scaled = scaled + (mask * 255)
+    return scaled
+
+
+__all__ = ['getfile', 'quicklook', 'File', 'natural_color']

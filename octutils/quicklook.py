@@ -2,14 +2,14 @@ import re
 import textwrap
 import time
 import traceback
+from decimal import Decimal
 from pathlib import Path
 
-import cartopy.feature as cfeature
+import cartopy.crs as ccrs
 import h5py
 import numpy as np
 import pyproj
 from matplotlib import pyplot as plt
-
 from matplotlib.colors import LogNorm, BoundaryNorm
 from matplotlib.ticker import MaxNLocator
 from netCDF4 import Dataset
@@ -122,15 +122,18 @@ class File:
             return self.get_sds(key=key)
         raise FileError('Unexpected file format')
 
+    def get_dn(self, key: str):
+        path = self.obj[f'Geometry_data'] \
+            if key[:3].lower() in ('lon', 'lat') else \
+            self.path
+        return path[key][:]
+
     def get_sds(self, key: str):
         """
             https://shikisai.jaxa.jp/faq/docs/GCOM-C_Products_Users_Guide_entrylevel__attach4_jp_191007.pdf#page=46
         """
-        path = self.obj[f'Geometry_data'] \
-            if key[:3].lower() in ('lon', 'lat') else \
-            self.path
         attrs = self.h5_attrs(key=key).pop(key)
-        sdn = path[key][:]
+        sdn = self.get_dn(key=key)
 
         if key == 'QA_flag':
             return np.ma.squeeze(sdn).astype(np.int32)
@@ -227,9 +230,25 @@ class File:
                               height=height,
                               area_extent=area_extent)
 
+    def get_extent(self):
+        return self.lon.min(), self.lon.max(), self.lat.min(), self.lat.max()
+
+    def get_flag_meanings(self, key='QA_flag'):
+        attrs = self.fmt_attr(path=f'Image_data/{key}')
+
+        def flag_meaning(flg: str, j: int):
+            start = len(f'Bit-{j}) ')
+            end = flg.index(': ')
+            return flg[start:end]
+
+        return [flag_meaning(flg=flag, j=i)
+                for i, flag in enumerate(attrs.pop('Data_description').split('\n'))
+                if len(flag) > 0]
+
     # ----------
     # Attributes
     # ----------
+
     def nc_attrs(self, key: str = None):
         attrs = self.glob_attrs.copy()
         if key:
@@ -309,9 +328,9 @@ class File:
             self.obj.close()
             [setattr(self, key, None)
              for key in self.__dict__.keys()]
-            return 0
+            return
         obj.close()
-        return 0
+        return
 
 
 def get_norm(vmin: float, vmax: float, scale: str):
@@ -336,40 +355,91 @@ def elapsed(start: float, file: Path):
     return
 
 
-def imview(sds, file: Path, crs, scale: str):
-    y, x = sds.shape
-    x, y = 20, 20 * (y / x)
-    fig, ax = plt.subplots(figsize=(x, y),
-                           subplot_kw={'projection': crs})
-    # --------
-    # img norm
-    # --------
-    mn, mx = np.ma.min(sds), np.ma.max(sds)
-    norm = get_norm(vmin=mn, vmax=mx, scale=scale)
-    cmp = plt.get_cmap('nipy_spectral')
+def resample(sds, extent, obj):
+    """
+    :param sds:
+    :type sds:
+    :param extent:
+    :type extent:
+    :param obj:
+    :type obj:
+    :return:
+    :rtype:
+    """
+    roi = obj.spatial_resolution()
+
+    # ------------
+    # geo-loc bbox
+    # ------------
+    lon_box = extent[0], extent[2]
+    lat_box = extent[1], extent[3]
+    lat_ts = np.mean(lat_box)
+
+    datum = 'WGS84'
+    # Get the step in degrees from the resolution in meters
+    g = pyproj.Geod(ellps=datum)
+    # define the lon/lat degree step from resolution
+    dy = round((roi * 360.) / (2. * np.pi * g.b) * 1e7) / 1e7
+    dx = round((roi * 360.) / (2. * np.pi * g.a * np.cos(np.deg2rad(lat_ts))) * 1e7) / 1e7
+
+    # Grid of lon/lat
+    w = np.arange(extent[0], extent[2], dx, np.float32).size
+    h = np.arange(extent[3], extent[1], -dy, np.float32).size
+
+    # -----------
+    # pyproj proj
+    # -----------
+    obj.proj = obj.get_proj(lon_0=np.mean(lon_box), lat_0=lat_ts)
+    target_geo = obj.get_area_def(area_extent=extent, shape=(h, w))
 
     # --------
-    # img disp
+    # area def
     # --------
-    m = ax.imshow(sds,
-                  transform=crs,
-                  extent=crs.bounds,
-                  norm=norm,
-                  cmap=cmp,
-                  origin='upper')
-    ax.gridlines(color='gray', linestyle=':')
-    ax.coastlines(linewidth=3)
-    fig.set_facecolor("black")
-    fig.colorbar(m, ax=ax, shrink=0.5, pad=0.01)
-    fig.savefig(file)
-    plt.clf()
-
-    im = Image.open(file)
-    plt.imshow(im, ax=ax)
-    return fig, ax
+    source_geo = SwathDefinition(obj.lon, obj.lat)
+    result = resample_nearest(source_geo_def=source_geo,
+                              data=sds,
+                              target_geo_def=target_geo,
+                              radius_of_influence=roi * 2,
+                              fill_value=None)
+    return result, target_geo
 
 
-def imsave(sds, file: Path, crs, scale: str):
+def quicklook(file, key, outpath, scale, bbox=None):
+    """
+    Saves a quick view of satellite swath image in a figure.
+    The swath data is resampled into the bbox if provided.
+
+    :param file: filename from where to obtain the swath data
+    :type file: Path
+    :param key: variable being read
+    :type key: str
+    :param outpath: output filename
+    :type outpath: Path
+    :param scale: lin or log. Indicates the colour scale to use. Chlorophyll has log-normal scale.
+    :type scale: str
+    :param bbox: bounding box of the area of interest as [lon_min, lat_min, lon_max, lat_max].
+    :type bbox: tuple
+    :return: None
+    :rtype: None
+    """
+
+    proj_name = 'lonlat' if bbox else 'laea'
+    kw = {'var': key, 'proj_name': proj_name}
+    with File(file=file, mode='r', **kw) as obj:
+        # ---------
+        # read data
+        # ---------
+        sds = obj.get_data()
+        crs = ccrs.PlateCarree()
+        lon, lat = obj.lon, obj.lat
+        if bbox is not None:
+            sds, tg = resample(sds=sds, extent=bbox, obj=obj)
+            crs = tg.to_cartopy_crs()
+            lon, lat = tg.get_lonlats()
+
+    # ---------
+    # Get image
+    # ---------
     size = [s / 100 for s in sds.shape[::-1]]
     fig, ax = plt.subplots(figsize=size,
                            clear=True,
@@ -385,93 +455,55 @@ def imsave(sds, file: Path, crs, scale: str):
     # --------
     # img disp
     # --------
-    ax.imshow(sds,
-              transform=crs,
-              extent=crs.bounds,
-              norm=norm,
-              cmap=cmp,
-              origin='upper')
+    ax.pcolormesh(lon,
+                  lat,
+                  sds,
+                  shading='auto',
+                  norm=norm,
+                  cmap=cmp)
     ax.gridlines(color='gray', linestyle=':')
     ax.axis('off')
-    land = cfeature.NaturalEarthFeature(
-        'physical', 'land', '10m',
-        linewidth=1,
-        edgecolor='w',
-        facecolor='0.2')
-    ax.add_feature(land)
+    ax.coastlines(color='w')
+
     fig.set_facecolor("black")
-    fig.savefig(file)
+    fig.savefig(outpath)
     plt.close(fig)
     return
 
 
-def quicklook(file: Path, key: str, outpath: Path, save: bool, scale: str):
-    with File(file=file, mode='r', **{'var': key}) as obj:
-        roi = obj.spatial_resolution()
-        # ---------
-        # read data
-        # ---------
-        sds = obj.get_data()
-        h, w = sds.shape
-
-        # ------------
-        # geo-loc bbox
-        # ------------
-        lon_box = np.min(obj.lon), np.max(obj.lon)
-        lat_box = np.min(obj.lat), np.max(obj.lat)
-
-        # -----------
-        # pyproj proj
-        # -----------
-        obj.proj = obj.get_proj()
-        x, y = obj.proj(lon_box, lat_box)
-        extent = np.min(x), np.min(y), np.max(x), np.max(y)
-        target_geo = obj.get_area_def(area_extent=extent, shape=(h, w))
-
-        # --------
-        # area def
-        # --------
-        source_geo = SwathDefinition(obj.lon, obj.lat)
-        result = resample_nearest(source_geo_def=source_geo,
-                                  data=sds,
-                                  target_geo_def=target_geo,
-                                  radius_of_influence=roi * 2,
-                                  fill_value=None)
-        crs = target_geo.to_cartopy_crs()
-
-    # ---------
-    # Get image
-    # ---------
-    if save:
-        return imsave(sds=result, file=outpath, crs=crs, scale=scale)
-    return imview(sds=result, file=outpath, crs=crs, scale=scale)
+def integral(val):
+    val = Decimal(val)
+    if val == val.to_integral():
+        return f'{val.quantize(Decimal(1))}'
+    return f'{val.normalize()}'
 
 
-def get(file_pattern: Path, key: str, save: bool = False):
+def get(file_pattern, key, bbox=None):
     """
     Get a quick view of satellite swath image
     :param file_pattern: File pattern or name
     :type file_pattern: Path
     :param key: variable to be displayed
     :type key: str
-    :param save: whether to save the created image (Default False)
-    :type save: bool
+    :param bbox: bounding box of the area of interest as [lon_min, lat_min, lon_max, lat_max].
+    :type bbox: tuple
     :return: None
     :rtype: None
     """
-    if save:
-        plt.rcParams.update({
-            'figure.frameon': False,
-            'figure.figsize': (100, 100),
-            'figure.constrained_layout.use': True
-        })
+    plt.rcParams.update({
+        'figure.frameon': False,
+        'figure.figsize': (100, 100),
+        'figure.constrained_layout.use': True
+    })
+
+    join = '' if bbox is None else '_'.join(integral(val=f'{v}') for v in bbox)
 
     for f in file_pattern.parent.glob(file_pattern.name):
         start = time.process_time()
 
         ext = f.suffix
         out = f.parent.joinpath(
-            f.name.replace(ext, f'_{key}.png'))
+            f.name.replace(ext, f'{join}_{key}.png'))
         if out.is_file():
             elapsed(start=start, file=out)
             continue
@@ -479,7 +511,7 @@ def get(file_pattern: Path, key: str, save: bool = False):
         # ql fig
         # ------
         scale = 'log' if key in ('CHLA', 'chlor_a', 'CDOM') else 'lin'
-        quicklook(file=f, outpath=out, scale=scale, save=save, key=key)
+        quicklook(file=f, outpath=out, scale=scale, key=key, bbox=bbox)
         # -------
         elapsed(start=start, file=out)
     return
@@ -512,7 +544,7 @@ if __name__ == '__main__':
             
                         '''), add_help=True)
 
-    parser.add_argument('--pattern', nargs=1, type=str, metavar='pattern', required=True, help='''\
+    parser.add_argument('--pattern', nargs=1, type=str, required=True, help='''\
       Valid file pattern of level-2 file
       File must be one of the two supported formats (NASA netcdf file or JAXA hdf5 file.
       ''')
@@ -521,6 +553,13 @@ if __name__ == '__main__':
       Satellite variable name to be used and contained in the input file
       OPTIONAL: default use chlor_a or CHLA depending on file type
       Use with --pattern
+      '''))
+
+    parser.add_argument('--bbox', nargs=4, default=[None],
+                        metavar=('LON_MIN', 'LAT_MIN', 'LON_MAX', 'LAT_MAX'),
+                        type=float, help=('''\
+      Bounding box of the area of interest. 
+      OPTIONAL: default use input image bbox
       '''))
 
     args = vars(parser.parse_args())
@@ -532,4 +571,4 @@ if __name__ == '__main__':
     if ('nc' in pat.name) and (var is None):
         var = 'chlor_a'
 
-    get(key=var, file_pattern=pat, save=True)
+    get(key=var, file_pattern=pat, bbox=args.get('bbox'))
