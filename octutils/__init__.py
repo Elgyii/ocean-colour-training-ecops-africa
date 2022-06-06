@@ -5,17 +5,19 @@ from netrc import netrc, NetrcParseError
 from pathlib import Path
 
 import h5py
-import matplotlib.pyplot as plt
-from matplotlib import colors
 import numpy as np
 import requests
-from cartopy import crs as ccrs
+from matplotlib import colors, ticker
 from shapely.geometry import Polygon
-from itertools import cycle
-from shutil import get_terminal_size
-from threading import Thread
-from time import sleep
+
 from . import quicklook
+from .pyutils import (
+    pyextract,
+    add_marker,
+    get_composite,
+    annual_max,
+    annual_min
+)
 from .quicklook import File
 
 
@@ -159,9 +161,8 @@ def search(bbox: tuple, start: datetime, end: datetime, dtype: str) -> list:
     return filename_list
 
 
-def getfile(bbox, start_date, end_date, output_dir=None, sensor='sgli', dtype='OC'):
+def getfile(bbox, start_date, end_date, output_dir=None, sensor='sgli', dtype='OC', manifest=None):
     """
-
     :param bbox: bounding box (area of interest) e.g., (lon_min, lat_min, lon_max, lat_max)
                  Mozambique channel bbox (30, -30, 50, -10)
     :type bbox: tuple
@@ -177,11 +178,31 @@ def getfile(bbox, start_date, end_date, output_dir=None, sensor='sgli', dtype='O
     :type sensor: str
     :param dtype: data type, OC - ocean colour or SST - sea surface temperature
     :type dtype: str
+    :param manifest:
+    :type manifest:
     :return: list of downloaded data files
     :rtype: list
     """
+    downloaded = []
+    fetched = downloaded.append
+    if output_dir is None:
+        output_dir = Path.cwd().joinpath('data')
+    if not output_dir.is_dir():
+        output_dir.mkdir(parents=True)
+
     if sensor != 'sgli':
-        return []
+        home = Path().home().absolute()
+        user, passwd = getauth(host='urs.earthdata.nasa.gov')
+        cmd = f'wget --load-cookies {home}/.urs_cookies ' \
+              f'--save-cookies {home}/.urs_cookies ' \
+              f'--user={user} ' \
+              f'--password={passwd} ' \
+              f'--auth-no-challenge=on ' \
+              f'--no-check-certificate ' \
+              f'--content-disposition -i {manifest}  ' \
+              f'--directory-prefix={output_dir}'
+        subprocess.call(cmd, shell=True)
+        return list(output_dir.glob('requested_files'))
 
     files = search(bbox=bbox,
                    start=start_date,
@@ -189,12 +210,6 @@ def getfile(bbox, start_date, end_date, output_dir=None, sensor='sgli', dtype='O
                    dtype=dtype)
 
     user, passwd = getauth(host='ftp.gportal.jaxa.jp')
-    downloaded = []
-    fetched = downloaded.append
-    if output_dir is None:
-        output_dir = Path.cwd().joinpath('data')
-    if not output_dir.is_dir():
-        output_dir.mkdir(parents=True)
 
     for src_file in files:
 
@@ -330,4 +345,13 @@ def enhance_image(image):
     return scaled
 
 
-__all__ = ['getfile', 'quicklook', 'File', 'natural_color']
+__all__ = [
+    'File',
+    'add_marker',
+    'annual_max',
+    'annual_min',
+    'getfile',
+    'get_composite',
+    'pyextract',
+    'quicklook'
+]
