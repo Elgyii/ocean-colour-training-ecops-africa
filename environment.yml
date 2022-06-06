@@ -3,22 +3,27 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - h5py
   - cartopy
-  - termcolor
-  - numpy
-  - pyproj
-  - python==3.9
+  - cftime
   - conda
-  - requests
-  - netcdf4
-  - pip
-  - tqdm
-  - pillow
-  - scipy
+  - gdal
+  - h5py
+  - jupyter
   - matplotlib
-  - jupyter 
+  - netcdf4
   - notebook
+  - numpy
+  - pandas
+  - pillow
+  - pip
+  - pyproj
+  - pyresample
+  - python==3.9
+  - requests
+  - scipy
+  - shapely
+  - tqdm
+  - termcolor
   - pip:
       - opencv-python
 prefix: ~/anaconda3/envs/ecop_rstoc
