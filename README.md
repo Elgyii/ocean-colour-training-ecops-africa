@@ -103,11 +103,11 @@ this [overview on Jupyter Notebook environment setting](https://classroom.oceant
 
 After the installation is done, please install required modules inside the `ecop_rstoc` environment using
 the [requirements.txt](https://github.com/Elgyii/ocean-colour-training-ecops-africa/blob/main/requirements.txt)   
-To do that (Windows)
+To do that 
 
 1. Go to ANACONDA NAVIGATOR.
 2. Under the `base (root)` launch `CMD.exe Prompt` or `Open Terminal`
-3. When Prompt open type `conda activate ecop_rstoc`. If you get a message that says `EnvironmentNameNotFound: Could not find conda environment: ecop_rstoc`, create a new environment by typing `conda env create -f environment.yml`. The `environment.yml` file is in this page or in the folder you downloaded and unzipped.
+3. Inside prompt/terminal type `conda activate ecop_rstoc`. If you get a message that says `EnvironmentNameNotFound: Could not find conda environment: ecop_rstoc`, create a new environment by typing `conda env create -f environment.yml`. The `environment.yml` file is in this page or in the folder you downloaded and unzipped.
 4. If the `ecop_rstoc` is activated, install modules with the command `pip install -r requirements.txt`. The `requirements.txt` file is also in the same location as the `environment.yml`.
 5. After the installation is completed, in the ANACONDA NAVIGATOR `Environments` select `ecop_rstoc`.
 6. Under the `ecop_rstoc` launch `Jupyter Notebook`.
