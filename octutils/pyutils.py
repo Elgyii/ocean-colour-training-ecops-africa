@@ -1,3 +1,7 @@
+__author__ = "Eligio Maure"
+__copyright__ = "Copyright (C) 2022 Eligio Maure"
+__license__ = "MIT"
+
 import time
 import traceback
 from pathlib import Path
