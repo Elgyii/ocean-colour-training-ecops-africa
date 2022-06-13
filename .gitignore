@@ -16,8 +16,8 @@ __pycache__/
 *.h5
 *.nc
 *.pptx
-requested*
-*manifest.txt
+*.tar
+*.txt
 debugger*
 
         
