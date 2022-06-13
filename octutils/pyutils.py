@@ -2,7 +2,6 @@ __author__ = "Eligio Maure"
 __copyright__ = "Copyright (C) 2022 Eligio Maure"
 __license__ = "MIT"
 
-import time
 import traceback
 from pathlib import Path
 
@@ -15,6 +14,8 @@ from matplotlib import patches
 from matplotlib.path import Path as mPath
 from netCDF4 import Dataset
 from pyproj import Geod
+
+from . import level2
 
 
 # ====================
@@ -30,6 +31,8 @@ class FileError(Exception):
 class File:
     def __init__(self, file: Path, mode='r'):
         self.path = Dataset(file, mode=mode)
+        self.lon = self.path['lon'][:]
+        self.lat = self.path['lat'][:]
 
     def __enter__(self):
         return self
@@ -42,7 +45,7 @@ class File:
         if exc_type is None:
             self.close()
 
-    def read(self, key: str):
+    def get_data(self, key: str):
         if key == 'time':
             if key in self.path.variables.keys():
                 return num2date(self.path[key][:],
@@ -249,7 +252,7 @@ def pixel_extract(sds, mask, scale):
 
     'pixel_count, valid, invalid, min, max, mean, median, std, pixel_value'
     if np.all(masked.mask):
-        return [total_px, valid_px, invalid_px, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan]
+        return [f'{total_px}', f'{valid_px}', f'{invalid_px}', '', '', '', '', '']
 
     if scale == 'log':
         sds_mean = 10 ** np.log10(valid).mean()
@@ -301,40 +304,46 @@ def pyextract(var, bbox, ifiles, ofile, window=None, mode='w'):
     if window % 2 == 0:
         raise Exception('Window must be an odd number!!')
 
+    reader = level2.File if 'L2' in ifiles[0].name else File
+
     with open(ofile, mode=mode) as txt:
         if mode == 'w':
             txt.writelines('file,lon,lat,variable,'
                            'time_start,time_end,'
                            'pixel_count,valid,invalid,'
                            'min,max,mean,median,std,pixel_value\n')
-        scale = 'log' if 'chl' in var.lower() else 'lin'
+
+        getvar = [var] if type(var) == str else var
+
         for f in ifiles:
-            with File(file=f) as fid:
-                lat = fid.read(key='lat')
-                lon = fid.read(key='lon')
-                sds = fid.read(key=var)
-                start = fid.get_attr(name='time_coverage_start').strftime('%FT%H:%M:%SZ')
-                end = fid.get_attr(name='time_coverage_end').strftime('%FT%H:%M:%SZ')
+            with reader(file=f) as fid:
+                for key in getvar:
+                    lat, lon = fid.lat, fid.lon
+                    sds = fid.get_data(key=key)
+                    start = fid.get_attr(name='time_coverage_start').strftime('%FT%H:%M:%SZ')
+                    end = fid.get_attr(name='time_coverage_end').strftime('%FT%H:%M:%SZ')
 
-            for px, py in zip(bbox['lon'], bbox['lat']):
-                if type(px) == list:
-                    mask = area_mask(bbox={'lon': px, 'lat': py}, lon=lon, lat=lat)
-                    px = ';'.join(f'{v}' for v in px)
-                    py = ';'.join(f'{v}' for v in py)
-                    pxv = ''
-                else:
-                    dist = harv_dist(px=px, py=py, lon=lon, lat=lat)
-                    center = np.where(dist == dist.min())
-                    mask = np.zeros_like(dist)
-                    mask[center] = 1
-                    kernel = np.ones((window, window), np.uint8)
-                    mask = np.bool_(cv2.dilate(mask, kernel, iterations=1))
-                    pxv = sds[center][0]
-                    pxv = f'{pxv:.6f}' if pxv != sds.fill_value else ''
+                    for px, py in zip(bbox['lon'], bbox['lat']):
+                        scale = 'log' if 'chl' in key.lower() else 'lin'
 
-                line = pixel_extract(sds=sds, mask=mask, scale=scale)
-                joined = ','.join([f.name, f'{px}', f'{py}', var, start, end] + line + [pxv])
-                txt.writelines(f'{joined}\n')
+                        if type(px) == list:
+                            mask = area_mask(bbox={'lon': px, 'lat': py}, lon=lon, lat=lat)
+                            px = ';'.join(f'{v}' for v in px)
+                            py = ';'.join(f'{v}' for v in py)
+                            pxv = ''
+                        else:
+                            dist = harv_dist(px=px, py=py, lon=lon, lat=lat)
+                            center = np.where(dist == dist.min())
+                            mask = np.zeros_like(dist)
+                            mask[center] = 1
+                            kernel = np.ones((window, window), np.uint8)
+                            mask = np.bool_(cv2.dilate(mask, kernel, iterations=1))
+                            pxv = sds[center][0]
+                            pxv = f'{pxv:.6f}' if pxv != sds.fill_value else ''
+
+                        line = pixel_extract(sds=sds, mask=mask, scale=scale)
+                        joined = ','.join([f.name, f'{px}', f'{py}', key, start, end] + line + [pxv])
+                        txt.writelines(f'{joined}\n')
     return pd.read_csv(ofile)
 
 
@@ -350,8 +359,8 @@ def preallocate(file, n):
     :rtype: tuple
     """
     with File(file=file, mode='r') as fid:
-        lat = fid.read(key='lat')
-        lon = fid.read(key='lon')
+        lat = fid.get_data(key='lat')
+        lon = fid.get_data(key='lon')
     sds = np.ma.empty((n, lat.size, lon.size), dtype=np.float32)
     return lon, lat, sds
 
@@ -372,7 +381,7 @@ def get_timeseries(files, var):
 
     for j, f in enumerate(files):
         with File(file=f, mode='r') as fid:
-            dt = fid.read(key=var)
+            dt = fid.get_data(key=var)
             sds[j, :, :] = dt
             append(fid.get_mean_date())
     fill_value = dt.fill_value

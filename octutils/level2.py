@@ -5,6 +5,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import pyproj
+from dateutil.parser import parse
 from netCDF4 import Dataset
 from pyresample import create_area_def
 from pyresample.geometry import SwathDefinition, AreaDefinition
@@ -108,7 +109,7 @@ class File:
         if key is None:
             key = self.var
         if key is None:
-            raise KeyError
+            raise KeyError('Variable should not be "None"')
         if self.file.suffix == '.nc':
             return self.path[key][:]
         if self.file.suffix == '.h5':
@@ -361,6 +362,26 @@ class File:
 
     # Attributes
     # ----------
+    def get_attr(self, name: str, loc='/'):
+        if self.file.suffix == '.nc':
+            key = None if loc == '/' else loc
+            attrs = self.nc_attrs(key=key)
+            if 'time' in name:
+                return parse(attrs.pop(name))
+            return attrs.pop(name)
+
+        if self.file.suffix == '.h5':
+            key = None if loc == '/' else loc
+            attrs = self.h5_attrs(key=key)
+            name = 'Scene_start_time' \
+                if name == 'time_coverage_start' \
+                else name
+            name = 'Scene_end_time' \
+                if name == 'time_coverage_end' \
+                else name
+            if 'time' in name:
+                return parse(attrs.pop(name))
+            return attrs.pop(name)
 
     def nc_attrs(self, key: str = None):
         attrs = self.glob_attrs.copy()
