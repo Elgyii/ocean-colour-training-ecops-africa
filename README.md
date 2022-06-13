@@ -84,12 +84,12 @@ Meetings are scheduled for 10:00 AM to 12:00 Noon Nairobi Time
 | June 23                                                          | Students work on presentations slides                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |                                                              |                                                                          |
 | June 24                                                          | Group presentations<br/>Course wrap-up and course evaluation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | P<br/> <br/>                                                 | 90 min<br/>20 min<br/>                                                   |
 
-(D) Discussion  
-(H) Hands-on    
-(L) Lecture  
-(P) Presentations
-(PCA) Pre-course assignment  
-(Q&A) Questions and Answers
+(D) Discussion<br />
+(H) Hands-on<br />    
+(L) Lecture<br />  
+(P) Presentations<br />
+(PCA) Pre-course assignment<br />  
+(Q&A) Questions and Answers<br />
 
 ---
 ## Prerequisites
