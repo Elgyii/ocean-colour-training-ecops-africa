@@ -310,7 +310,7 @@ def pyextract(var, bbox, ifiles, ofile, window=None, l2_bits=None, mode='w'):
     reader = level2.File if is_l2 else File
     if is_l2 and (l2_bits is None):
         raise Exception('Please specify "l2_bits" for quality control of L2 data!!')
-    
+
     with open(ofile, mode=mode) as txt:
         if mode == 'w':
             txt.writelines('file,lon,lat,variable,'
@@ -320,7 +320,7 @@ def pyextract(var, bbox, ifiles, ofile, window=None, l2_bits=None, mode='w'):
         getvar = [var] if type(var) == str else var
 
         for i, f in enumerate(ifiles):
-            show=True if i==0 else False
+            show = True if i == 0 else False
             with reader(file=f) as fid:
                 for key in getvar:
                     lat, lon = fid.lat, fid.lon
