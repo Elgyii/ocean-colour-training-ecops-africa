@@ -274,7 +274,7 @@ def pixel_extract(sds, mask, scale):
     return out
 
 
-def pyextract(var, bbox, ifiles, ofile, window=None, mode='w'):
+def pyextract(var, bbox, ifiles, ofile, window=None, l2_bits=None, mode='w'):
     """
     Extract point of region from a series of satellite images
 
@@ -294,6 +294,8 @@ def pyextract(var, bbox, ifiles, ofile, window=None, mode='w'):
     :type ofile: Path
     :param window: pixel window size of the satellite data extract made around the point, optional: default = 3
     :type window: int
+    :param l2_bits: sequence of quality flag bits used to mask invalid data
+    :type l2_bits: str
     :param mode: file open mode, w - write mode, a - append mode
     :type mode: str
     :return: pandas dataframe with extract data
@@ -304,22 +306,29 @@ def pyextract(var, bbox, ifiles, ofile, window=None, mode='w'):
     if window % 2 == 0:
         raise Exception('Window must be an odd number!!')
 
-    reader = level2.File if 'L2' in ifiles[0].name else File
-
+    is_l2 = 'L2' in ifiles[0].name
+    reader = level2.File if is_l2 else File
+    if is_l2 and (l2_bits is None):
+        raise Exception('Please specify "l2_bits" for quality control of L2 data!!')
+    
     with open(ofile, mode=mode) as txt:
         if mode == 'w':
             txt.writelines('file,lon,lat,variable,'
                            'time_start,time_end,'
                            'pixel_count,valid,invalid,'
                            'min,max,mean,median,std,pixel_value\n')
-
         getvar = [var] if type(var) == str else var
 
-        for f in ifiles:
+        for i, f in enumerate(ifiles):
+            show=True if i==0 else False
             with reader(file=f) as fid:
                 for key in getvar:
                     lat, lon = fid.lat, fid.lon
-                    sds = fid.get_data(key=key)
+                    if is_l2:
+                        sds = fid.screen_data(key=key, flags=l2_bits, show=show)
+                    else:
+                        sds = fid.get_data(key=key)
+
                     start = fid.get_attr(name='time_coverage_start').strftime('%FT%H:%M:%SZ')
                     end = fid.get_attr(name='time_coverage_end').strftime('%FT%H:%M:%SZ')
 

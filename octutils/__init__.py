@@ -28,7 +28,7 @@ from .pyutils import (
     annual_min
 )
 from .level2 import File
-from .level2 import resample
+from .level2 import l2remap
 
 SATELLITES = {
     'czcs': {'INSTRUMENT': 'CZCS',
@@ -556,6 +556,6 @@ __all__ = [
     'get_composite',
     'pyextract',
     'level2',
-    'resample',
+    'l2remap',
     'progress_bar'
 ]

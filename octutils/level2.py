@@ -253,7 +253,8 @@ class File:
                               height=height,
                               area_extent=area_extent)
 
-    def get_area_definition(self, area_extent, resolution, units='metres',
+    def get_area_definition(self, area_extent,
+                            resolution, units='metres',
                             width=None, height=None):
         """
         Returns a uniformly spaced geographic region to be used in resampling (the target area).
@@ -337,18 +338,18 @@ class File:
                 for i, flag in enumerate(attrs.pop('Data_description').split('\n'))
                 if len(flag) > 0]
 
-    def screen_data(self, key, bits, show=True):
+    def screen_data(self, key, flags, show=True):
         if self.file.suffix == '.h5':
-            flags = self.path['QA_flag'][:]
+            l2flags = self.path['QA_flag'][:]
         else:
-            flags = self.path['l2_flags'][:]
+            l2flags = self.path['l2_flags'][:]
         data = self.get_data(key=key)
         mask, disp = 0, []
         fmean = self.get_flag_meanings()
 
-        for j, bit in enumerate(bits):
+        for j, bit in enumerate(flags):
             if bit == '1':
-                mask += (int(bit) << j) & flags
+                mask += (int(bit) << j) & l2flags
             if bit == '1':
                 disp.append(f'{fmean[j]}: {j}')
         if show:
@@ -467,28 +468,35 @@ class File:
         return
 
 
-def resample(file, key, flag_bits, bbox=None, target_geo=None):
+def l2remap(file_pattern, key, flags, bbox, proj: str):
     """
-    :param file:
-    :type file: Path
-    :param flag_bits:
-    :type flag_bits: str
+    :param disp:
+    :type disp:
+    :param file_pattern:
+    :type file_pattern: str
+    :param flags:
+    :type flags: str
     :param key:
     :type key: str
     :param bbox:
     :type bbox: tuple
-    :param target_geo:
-    :type target_geo: tuple
+    :param proj:
+    :type proj: str
     :return:
     :rtype:
     """
-    with File(file=file, mode='r') as fid:
-        roi = fid.spatial_resolution()
+    files = Path(file_pattern).parent.glob(
+        Path(file_pattern).name)
+    mapped = []
+    append = mapped.append
 
-        disp = False
-        if target_geo is None:
+    for i, file in enumerate(files):
+        disp = True if i == 0 else False
+
+        with File(file=file, mode='r') as fid:
+            roi = fid.spatial_resolution()
+            append(f'{file}')
             disp = True
-
             # ------------
             # geo-loc bbox
             # ------------
@@ -506,20 +514,20 @@ def resample(file, key, flag_bits, bbox=None, target_geo=None):
             area_extent = lower_left_x, lower_left_y, upper_right_x, upper_right_y
             target_geo = fid.get_area_definition(area_extent=area_extent, resolution=roi + 1)
 
-        # ----------
-        # screen sds
-        # ----------
-        sds = fid.screen_data(key=key, bits=flag_bits, show=disp)
+            # ----------
+            # screen sds
+            # ----------
+            sds = fid.screen_data(key=key, flags=flags, show=disp)
 
-        # --------
-        # area def
-        # --------
-        source_geo = SwathDefinition(fid.lon, fid.lat)
-        result = resample_nearest(source_geo_def=source_geo,
-                                  data=sds,
-                                  target_geo_def=target_geo,
-                                  radius_of_influence=roi * 2,
-                                  fill_value=None)
-    if bbox is None:
-        return result
-    return result, target_geo
+            # --------
+            # area def
+            # --------
+            source_geo = SwathDefinition(fid.lon, fid.lat)
+            result = resample_nearest(source_geo_def=source_geo,
+                                      data=sds,
+                                      target_geo_def=target_geo,
+                                      radius_of_influence=roi * 2,
+                                      fill_value=None)
+            fid.data = result
+    print('\n'.join(mapped))
+    return
